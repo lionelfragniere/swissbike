@@ -11,4 +11,5 @@ dependencies = [
   "polyline>=2.0.2",
   "cachetools>=5.3",
   "python-multipart>=0.0.9",
+  "defusedxml>=0.7.1",
 ]
