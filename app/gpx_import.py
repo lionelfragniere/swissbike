@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import List, Tuple
-import xml.etree.ElementTree as ET
+import defusedxml.etree.ElementTree as ET
 
 def parse_gpx_points(gpx_bytes: bytes) -> List[Tuple[float,float]]:
     # Returns list of (lat, lon)
