@@ -329,16 +329,30 @@ function resamplePoints(coords, maxSamples) {
 
 function computeSlopes(points) {
   let ascent = 0, descent = 0, slopeMax = 0;
+  const WINDOW_M = 50; // look ~50m each side for centered window
+
+  for (let i = 0; i < points.length; i++) {
+    // Walk backwards to find point ~WINDOW_M before index i
+    let a = i;
+    while (a > 0 && (points[i].dist_m - points[a].dist_m) < WINDOW_M) a--;
+
+    // Walk forwards to find point ~WINDOW_M after index i
+    let b = i;
+    while (b < points.length - 1 && (points[b].dist_m - points[i].dist_m) < WINDOW_M) b++;
+
+    const dd = points[b].dist_m - points[a].dist_m;
+    const dz = (points[b].ele_m || 0) - (points[a].ele_m || 0);
+    points[i].slope_pct = dd > 1 ? (100 * dz / dd) : 0;
+  }
+
+  // Ascent/descent/max from consecutive point diffs
   for (let i = 1; i < points.length; i++) {
-    const d = haversineM(points[i - 1].lat, points[i - 1].lon, points[i].lat, points[i].lon);
     const dEle = (points[i].ele_m || 0) - (points[i - 1].ele_m || 0);
-    const slope = d > 0 ? Math.abs(dEle / d) * 100 : 0;
-    points[i].slope_pct = (d > 0 ? dEle / d * 100 : 0);
     if (dEle > 0) ascent += dEle;
     if (dEle < 0) descent -= dEle;
-    if (slope > slopeMax) slopeMax = slope;
+    const absSlope = Math.abs(points[i].slope_pct || 0);
+    if (absSlope > slopeMax) slopeMax = absSlope;
   }
-  points[0].slope_pct = 0;
   return { ascent_m: ascent, descent_m: descent, slope_max_pct: slopeMax };
 }
 
@@ -505,14 +519,17 @@ async function fetchElevations(latlons) {
   if (!res.ok) throw new Error(`Swisstopo error ${res.status}`);
   const profileData = await res.json();
 
-  // 5. Map back to {lat, lon, ele_m, dist_m} using the corrected LV95 -> WGS84 conversion
+  // 5. Map back to {lat, lon, ele_m, dist_m, easting, northing} 
+  // Note: we keep easting/northing for surface API re-use (no re-projection needed)
   return profileData.map(p => {
     const wgs84 = lv95ToWgs84(p.easting, p.northing);
     return {
       lat: wgs84.lat,
       lon: wgs84.lon,
       ele_m: p.alts?.DTM2 || p.alts?.COMB || 0,
-      dist_m: p.dist || 0
+      dist_m: p.dist || 0,
+      E_lv95: p.easting,
+      N_lv95: p.northing
     };
   });
 }
@@ -553,126 +570,121 @@ function surfaceCategory(tags) {
 }
 
 // ─────────────────────────────────────────────
-// API: Surface via Overpass
+// API: Surface via Swisstopo TLM3D (replaces Overpass)
+// Layer: ch.swisstopo.swisstlm3d-strassen
+// BELAGSART: 100=Asphalte/Béton (hard),  200=Naturel (gravel)
 // ─────────────────────────────────────────────
-const _surfCache = new Map();
-let overpassBlocked = false; // Global killswitch for rate-limits
-const OVERPASS_URLS = [
-  "https://overpass-api.de/api/interpreter",
-  "https://z.overpass-api.de/api/interpreter",
-  "https://lz4.overpass-api.de/api/interpreter"
-];
+const TLM3D_IDENTIFY_URL = "https://api3.geo.admin.ch/rest/services/ech/MapServer/identify";
+const _tlmCache = new Map();
 
-async function fetchSurfacePoint(lat, lon, radiusM = 50) {
-  if (overpassBlocked) return { category: "Inconnu", confidence: 0, tags: {} };
-
-  const key = `${lat.toFixed(4)}|${lon.toFixed(4)}|${radiusM}`;
-  if (_surfCache.has(key)) return _surfCache.get(key);
-
-  const query = `[out:json][timeout:12];(way(around:${radiusM},${lat},${lon})["highway"];);out tags center 20;`;
-  let resultObj = null;
-
-  for (let attempt = 0; attempt < 2; attempt++) {
-    for (const url of OVERPASS_URLS) {
-      if (overpassBlocked) break;
-      try {
-        const r = await fetch(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: `data=${encodeURIComponent(query)}`,
-          signal: AbortSignal.timeout(5000 + attempt * 2000)
-        });
-        if (r.status === 429) {
-          console.warn("Overpass 429 Too Many Requests. Blocking further calls.");
-          overpassBlocked = true;
-          break;
-        }
-        if (!r.ok) continue;
-        const data = await r.json();
-        const elements = data.elements || [];
-
-        let best = null;
-        for (const el of elements) {
-          const tags = el.tags || {};
-          if (tags.surface || tags.tracktype || tags.smoothness) {
-            const [cat, conf] = surfaceCategory(tags);
-            if (!best || conf > best.confidence) {
-              best = { category: cat, confidence: conf, tags };
-            }
-          }
-        }
-        if (!best && elements.length) {
-          const tags = elements[0].tags || {};
-          const [cat, conf] = surfaceCategory(tags);
-          best = { category: cat, confidence: conf, tags };
-        }
-        resultObj = best;
-        break; // Success on this URL
-      } catch (e) {
-        // Timeout or network error, let it loop to the next URL
-      }
-    }
-    if (resultObj) break; // Total success
-    await new Promise(r => setTimeout(r, 500)); // wait before next attempt
-  }
-
-  const result = resultObj || { category: "Inconnu", confidence: 0, tags: {} };
-  _surfCache.set(key, result);
-  return result;
+function belagToSurface(belagsart) {
+  if (belagsart === 100) return { category: "Asphalte", confidence: 0.9 };
+  if (belagsart === 200) return { category: "Naturel", confidence: 0.9 };
+  return { category: "Inconnu", confidence: 0.2 };
 }
 
-async function fetchSurfaces(points, sampleEvery = 5, radiusM = 50) {
-  const results = new Array(points.length).fill(null);
-  let consecutiveFailures = 0;
+async function fetchSurfaceTLM3D(E, N) {
+  const key = `${Math.round(E)}|${Math.round(N)}`;
+  if (_tlmCache.has(key)) return _tlmCache.get(key);
 
-  for (let i = 0; i < points.length; i += sampleEvery) {
-    if (overpassBlocked || consecutiveFailures >= 3) {
-      if (!overpassBlocked) console.warn("Overpass API has failed 3 times consecutively. Aborting surface fetch for the rest of the route.");
-      overpassBlocked = true;
-      break;
-    }
-
-    const res = await fetchSurfacePoint(points[i].lat, points[i].lon, radiusM);
-    if (res.category === "Inconnu") consecutiveFailures++;
-    else consecutiveFailures = 0;
-
-    for (let j = i; j < Math.min(points.length, i + sampleEvery); j++) {
-      results[j] = res;
-    }
-    // Small delay to respect Overpass rate limits for sequential queries
-    await new Promise(r => setTimeout(r, 100));
+  // Try progressively larger envelopes if no road found at first
+  const VIEW_HALF = 1000;
+  for (const hs of [5, 20, 50]) {
+    const geom = `${E - hs},${N - hs},${E + hs},${N + hs}`;
+    const mapExtent = `${E - VIEW_HALF},${N - VIEW_HALF},${E + VIEW_HALF},${N + VIEW_HALF}`;
+    const params = new URLSearchParams({
+      geometryType: "esriGeometryEnvelope",
+      geometry: geom,
+      layers: "all:ch.swisstopo.swisstlm3d-strassen",
+      sr: "2056",
+      tolerance: "0",
+      mapExtent,
+      imageDisplay: "1000,1000,96",
+      returnGeometry: "false",
+      lang: "fr"
+    });
+    try {
+      const r = await fetch(`${TLM3D_IDENTIFY_URL}?${params}`, {
+        signal: AbortSignal.timeout(6000)
+      });
+      if (!r.ok) continue;
+      const data = await r.json();
+      for (const feat of (data.results || [])) {
+        const attrs = feat.attributes || feat.properties || {};
+        const belag = attrs?.belagsart ?? attrs?.BELAGSART;
+        if (belag != null) {
+          const result = belagToSurface(parseInt(belag));
+          _tlmCache.set(key, result);
+          return result;
+        }
+      }
+    } catch { continue; }
   }
-  return results.map(r => r || { category: "Inconnu", confidence: 0, tags: {} });
+
+  const fallback = { category: "Inconnu", confidence: 0.2 };
+  _tlmCache.set(key, fallback);
+  return fallback;
+}
+
+async function fetchSurfaces(profile, sampleEveryM = 50) {
+  const results = new Array(profile.length).fill(null);
+
+  // Collect sample indices at every `sampleEveryM` along the route
+  let lastSampledDist = -Infinity;
+  const sampleIndices = [];
+  for (let i = 0; i < profile.length; i++) {
+    if (profile[i].dist_m - lastSampledDist >= sampleEveryM) {
+      sampleIndices.push(i);
+      lastSampledDist = profile[i].dist_m;
+    }
+  }
+
+  for (const i of sampleIndices) {
+    const p = profile[i];
+    // Prefer the easting/northing already in the profile (no re-conversion)
+    const E = p.E_lv95 || wgs84ToLV95(p.lat, p.lon)?.E;
+    const N = p.N_lv95 || wgs84ToLV95(p.lat, p.lon)?.N;
+    if (!E || !N) { results[i] = { category: "Inconnu", confidence: 0 }; continue; }
+
+    results[i] = await fetchSurfaceTLM3D(E, N);
+    await new Promise(r => setTimeout(r, 30)); // 30ms between calls
+  }
+
+  // Forward-fill gaps between sampled points
+  let lastSurf = { category: "Inconnu", confidence: 0 };
+  for (let i = 0; i < results.length; i++) {
+    if (results[i]) lastSurf = results[i];
+    else results[i] = lastSurf;
+  }
+  return results;
 }
 
 // ─────────────────────────────────────────────
 // Build full profile from [lat,lon] array
 // ─────────────────────────────────────────────
 async function buildProfile(latlons, maxSamples, onProgress) {
-  // Note: overpassBlocked is NOT reset here – it persists for the session
-  // to avoid hammering a rate-limited Overpass server on every analysis.
-
   // Convert lat/lon pairs to objects for easier parsing
   const latlonObjs = latlons.map(p => (Array.isArray(p) ? { lon: p[0], lat: p[1] } : { lon: p.lon, lat: p.lat }));
 
   onProgress?.("Altitude en cours…");
-  // Get heavily sampled profile from Swisstopo (25m interval)
+  // Get profile at 50m intervals from Swisstopo
   const profile = await fetchElevations(latlonObjs);
 
   if (!profile.length) throw new Error("Swisstopo Profile API n'a renvoyé aucune donnée.");
 
-  // To prevent Overpass API blocks, sparsely request surface data on `profile` based on maxSamples.
-  // We determine the stride so that we make AT MOST `maxSamples` queries over the track length.
+  // Compute smooth slopes BEFORE surface (so slope colors work even if surface fails)
+  const slopes = computeSlopes(profile);
+
+  // Fetch surface type from Swisstopo TLM3D, every 50m along the route
   onProgress?.("Surface en cours…");
-  const sampleEvery = Math.max(1, Math.ceil(profile.length / maxSamples));
-  const surfaces = await fetchSurfaces(profile, sampleEvery, 50);
+  const SURFACE_EVERY_M = 50;
+  const surfaces = await fetchSurfaces(profile, SURFACE_EVERY_M);
 
   profile.forEach((p, i) => {
     p.surface_category = surfaces[i].category;
     p.surface_confidence = surfaces[i].confidence;
   });
 
-  const slopes = computeSlopes(profile);
   const breakdown = breakdownSurface(profile);
 
   return { profile, slopes, breakdown, total_m: profile[profile.length - 1].dist_m };
