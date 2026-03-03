@@ -54,14 +54,31 @@ const wpsBox = el("wps");
 const btnClearWps = el("btnClearWps");
 const gpxFile = el("gpxFile");
 const btnGPXProfile = el("btnGPXProfile");
+const banner = el("instructionBanner");
+const bottomPanel = el("bottomPanel");
 
 // ─────────────────────────────────────────────
 // State
 // ─────────────────────────────────────────────
-let start = { lat: 46.5191, lon: 6.6339 };  // Lausanne
-let end = { lat: 46.2044, lon: 6.1432 };  // Geneva
+let start = null;
+let end = null;
 let waypoints = [];
 let lastRoutePoints = null; // for GPX export
+let clickState = 0; // 0=need start, 1=need end, 2=computed
+
+function updateBanner() {
+  if (clickState === 0) {
+    banner.textContent = "📍 Cliquez sur la carte pour choisir le point de DÉPART";
+    banner.classList.remove("hidden");
+  } else if (clickState === 1) {
+    banner.textContent = "🏁 Maintenant, cliquez pour le point d'ARRIVÉE";
+    banner.classList.remove("hidden");
+  } else if (clickState === 2) {
+    banner.textContent = "🚴 Itinéraire calculé. Cliquez pour ajouter des points de passage.";
+    setTimeout(() => banner.classList.add("hidden"), 4000);
+  }
+}
+updateBanner();
 
 // ─────────────────────────────────────────────
 // Map
@@ -69,12 +86,14 @@ let lastRoutePoints = null; // for GPX export
 const map = new maplibregl.Map({
   container: "map",
   style: SWISSTOPO_STYLE,
-  center: [start.lon, start.lat],
-  zoom: 9
+  center: [8.2275, 46.8182], // Center of CH
+  zoom: 8
 });
 map.addControl(new maplibregl.NavigationControl(), "top-right");
 
-let startMarker, endMarker, wpMarkers = [];
+let startMarker = new maplibregl.Marker({ color: "#4ade80", draggable: true });
+let endMarker = new maplibregl.Marker({ color: "#f87171", draggable: true });
+let wpMarkers = [];
 
 map.on("load", () => {
   map.addSource("route", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
@@ -88,11 +107,6 @@ map.on("load", () => {
       "line-opacity": 0.9
     }
   });
-
-  startMarker = new maplibregl.Marker({ color: "#4ade80", draggable: true })
-    .setLngLat([start.lon, start.lat]).addTo(map);
-  endMarker = new maplibregl.Marker({ color: "#f87171", draggable: true })
-    .setLngLat([end.lon, end.lat]).addTo(map);
 
   startMarker.on("dragend", () => {
     const ll = startMarker.getLngLat();
@@ -109,21 +123,28 @@ map.on("load", () => {
 });
 
 map.on("click", (e) => {
-  if (e.originalEvent.ctrlKey || e.originalEvent.metaKey) {
+  if (clickState === 0) {
+    start = { lat: e.lngLat.lat, lon: e.lngLat.lng };
+    startMarker.setLngLat([start.lon, start.lat]).addTo(map);
+    clickState = 1;
+    updateBanner();
+    setStatus("Départ défini.");
+  } else if (clickState === 1) {
+    end = { lat: e.lngLat.lat, lon: e.lngLat.lng };
+    endMarker.setLngLat([end.lon, end.lat]).addTo(map);
+    clickState = 2;
+    updateBanner();
+    setStatus("Arrivée définie, calcul en cours...");
+    btnCompute.click(); // Auto-calculate
+  } else {
+    // State 2: already computed, add waypoint
     waypoints.push({ lat: e.lngLat.lat, lon: e.lngLat.lng });
     refreshWpMarkers();
     refreshWpsUI();
-    setStatus("Point de passage ajouté.");
-    return;
-  }
-  if (e.originalEvent.shiftKey) {
-    start = { lat: e.lngLat.lat, lon: e.lngLat.lng };
-    startMarker?.setLngLat([start.lon, start.lat]);
-    setStatus("Départ défini.");
-  } else {
-    end = { lat: e.lngLat.lat, lon: e.lngLat.lng };
-    endMarker?.setLngLat([end.lon, end.lat]);
-    setStatus("Arrivée définie.");
+    banner.textContent = "⏱️ Recalcul de l'itinéraire...";
+    banner.classList.remove("hidden");
+    setStatus("Point de passage ajouté, recalcul...");
+    btnCompute.click(); // Auto-recalculate
   }
 });
 
@@ -138,6 +159,7 @@ btnClearWps.addEventListener("click", () => {
   refreshWpMarkers();
   refreshWpsUI();
   setStatus("Points de passage effacés.");
+  if (clickState === 2) btnCompute.click();
 });
 
 function refreshWpsUI() {
@@ -244,6 +266,10 @@ async function fetchRoute(startPt, endPt, viaPoints, options = {}) {
       use_trails: options.profile === "mtb" ? 1.0 : options.profile === "gravel" ? 0.6 : 0.1,
     }
   };
+  if (options.profile === "road") {
+    costingOptions.bicycle.bicycle_type = "Road";
+    costingOptions.bicycle.use_hills = 0;
+  }
 
   const payload = {
     format: "osrm",
@@ -366,49 +392,63 @@ function surfaceCategory(tags) {
 // API: Surface via Overpass
 // ─────────────────────────────────────────────
 const _surfCache = new Map();
+const OVERPASS_URLS = [
+  "https://overpass-api.de/api/interpreter",
+  "https://z.overpass-api.de/api/interpreter",
+  "https://lz4.overpass-api.de/api/interpreter"
+];
 
-async function fetchSurfacePoint(lat, lon, radiusM = 25) {
+async function fetchSurfacePoint(lat, lon, radiusM = 50) {
   const key = `${lat.toFixed(4)}|${lon.toFixed(4)}|${radiusM}`;
   if (_surfCache.has(key)) return _surfCache.get(key);
 
   const query = `[out:json][timeout:12];(way(around:${radiusM},${lat},${lon})["highway"];);out tags center 20;`;
-  try {
-    const r = await fetch(OVERPASS_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: `data=${encodeURIComponent(query)}`,
-      signal: AbortSignal.timeout(3000)
-    });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const data = await r.json();
-    const elements = data.elements || [];
+  let resultObj = null;
 
-    let best = null;
-    for (const el of elements) {
-      const tags = el.tags || {};
-      if (tags.surface || tags.tracktype || tags.smoothness) {
-        const [cat, conf] = surfaceCategory(tags);
-        if (!best || conf > best.confidence) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    for (const url of OVERPASS_URLS) {
+      try {
+        const r = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: `data=${encodeURIComponent(query)}`,
+          signal: AbortSignal.timeout(3000 + attempt * 2000)
+        });
+        if (!r.ok) continue;
+        const data = await r.json();
+        const elements = data.elements || [];
+
+        let best = null;
+        for (const el of elements) {
+          const tags = el.tags || {};
+          if (tags.surface || tags.tracktype || tags.smoothness) {
+            const [cat, conf] = surfaceCategory(tags);
+            if (!best || conf > best.confidence) {
+              best = { category: cat, confidence: conf, tags };
+            }
+          }
+        }
+        if (!best && elements.length) {
+          const tags = elements[0].tags || {};
+          const [cat, conf] = surfaceCategory(tags);
           best = { category: cat, confidence: conf, tags };
         }
+        resultObj = best;
+        break; // Success on this URL
+      } catch (e) {
+        // Timeout or network error, let it loop to the next URL
       }
     }
-    if (!best && elements.length) {
-      const tags = elements[0].tags || {};
-      const [cat, conf] = surfaceCategory(tags);
-      best = { category: cat, confidence: conf, tags };
-    }
-    const result = best || { category: "Inconnu", confidence: 0, tags: {} };
-    _surfCache.set(key, result);
-    return result;
-  } catch {
-    const fallback = { category: "Inconnu", confidence: 0, tags: {} };
-    _surfCache.set(key, fallback);
-    return fallback;
+    if (resultObj) break; // Total success
+    await new Promise(r => setTimeout(r, 500)); // wait before next attempt
   }
+
+  const result = resultObj || { category: "Inconnu", confidence: 0, tags: {} };
+  _surfCache.set(key, result);
+  return result;
 }
 
-async function fetchSurfaces(points, sampleEvery = 5, radiusM = 25) {
+async function fetchSurfaces(points, sampleEvery = 5, radiusM = 50) {
   const results = new Array(points.length).fill(null);
   for (let i = 0; i < points.length; i += sampleEvery) {
     const res = await fetchSurfacePoint(points[i].lat, points[i].lon, radiusM);
@@ -432,7 +472,7 @@ async function buildProfile(latlons, maxSamples, onProgress) {
   sampled.forEach((p, i) => { p.ele_m = elevations[i] || 0; });
 
   onProgress?.("Surface en cours…");
-  const surfaces = await fetchSurfaces(sampled, 5, 25);
+  const surfaces = await fetchSurfaces(sampled, 5, 50);
   sampled.forEach((p, i) => {
     p.surface_category = surfaces[i].category;
     p.surface_confidence = surfaces[i].confidence;
@@ -538,7 +578,10 @@ function drawProfile(profilePoints) {
     const col = SURF_COLORS[k] || "#334155";
     return `<span class="badge" style="color:${col};border-color:${col}30;background:${col}18">${k}</span>`;
   }).join("");
-  chartHint.textContent = "Survole le graphique pour voir l'altitude / pente / surface.";
+  chartHint.textContent = "Survolez le graphique pour voir l'altitude, la pente et la surface.";
+
+  // Save base graph image data
+  const imageData = ctx.getImageData(0, 0, W, H);
 
   // Hover interaction
   chart.onmousemove = ev => {
@@ -555,15 +598,15 @@ function drawProfile(profilePoints) {
     chartHint.textContent = `${km} km › ${Math.round(p.ele_m || 0)} m alt › pente ${sign}${slope}% › ${p.surface_category || "Inconnu"}`;
 
     // Crosshair
-    chart.width = W; chart.height = H;
-    drawProfile._last && drawProfile._last();
+    ctx.putImageData(imageData, 0, 0); // Restore pristine graph
     const cx = xp(dist[idx]);
     ctx.strokeStyle = "#e2e8f0"; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
     ctx.beginPath(); ctx.moveTo(cx, y0); ctx.lineTo(cx, y1); ctx.stroke();
     ctx.setLineDash([]);
   };
   chart.onmouseleave = () => {
-    chartHint.textContent = "Survole le graphique pour voir l'altitude / pente / surface.";
+    chartHint.textContent = "Survolez le graphique pour voir l'altitude, la pente et la surface.";
+    ctx.putImageData(imageData, 0, 0); // Restore pristine graph
   };
 }
 
@@ -590,6 +633,9 @@ function renderSummary(dist_m, ascent_m, descent_m, slope_max, duration_s, break
 // Main "Calculer" button
 // ─────────────────────────────────────────────
 btnCompute.addEventListener("click", async () => {
+  if (!start) { setError("Veuillez d'abord définir un point de départ."); return; }
+  if (!el("isLoop").checked && !end) { setError("Veuillez définir un point d'arrivée."); return; }
+
   setError(""); summary.style.display = "none";
   setBusy(true);
 
@@ -622,10 +668,12 @@ btnCompute.addEventListener("click", async () => {
     const { profile: prof, slopes, breakdown, total_m } = await buildProfile(coords, maxSamples, setStatus);
     lastRoutePoints = prof;
 
+    bottomPanel.classList.remove("hidden");
     renderSummary(r0.distance || total_m, slopes.ascent_m, slopes.descent_m, slopes.slope_max_pct, r0.duration, breakdown);
     drawProfile(prof);
     btnGPX.disabled = false;
     setStatus("Itinéraire calculé ✓");
+    if (clickState === 2) updateBanner();
   } catch (e) {
     console.error(e);
     setError(String(e?.message || e));

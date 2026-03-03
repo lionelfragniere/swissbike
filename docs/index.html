@@ -1,15 +1,21 @@
 <!doctype html>
 <html lang="fr">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SwissBike – Planification de sorties vélo</title>
-  <meta name="description" content="Planifiez vos sorties vélo de route en Suisse: profil altimétrique, type de surface (asphalte, gravier…), distances et dénivelé.">
+  <meta name="description"
+    content="Planifiez vos sorties vélo de route en Suisse: profil altimétrique, type de surface (asphalte, gravier…), distances et dénivelé.">
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 </head>
+
 <body>
   <div id="app">
+    <!-- ── Instruction Banner ── -->
+    <div id="instructionBanner" class="banner hidden">📍 Cliquez sur la carte pour choisir le point de DÉPART</div>
+
     <!-- ── Sidebar ── -->
     <div id="sidebar">
 
@@ -19,7 +25,8 @@
       </div>
 
       <div class="hint">
-        <kbd>Clic</kbd> = arrivée &nbsp;·&nbsp; <kbd>Shift+clic</kbd> = départ &nbsp;·&nbsp; <kbd>Ctrl+clic</kbd> = point de passage
+        <kbd>Clic</kbd> = arrivée &nbsp;·&nbsp; <kbd>Shift+clic</kbd> = départ &nbsp;·&nbsp; <kbd>Ctrl+clic</kbd> =
+        point de passage
       </div>
 
       <!-- Route options -->
@@ -106,15 +113,7 @@
         <button id="btnGPXProfile" class="btn-secondary" type="button">Analyser le profil GPX</button>
       </div>
 
-      <!-- Elevation profile -->
-      <div class="card">
-        <div class="card-title">Profil altimétrique</div>
-        <div id="chartWrap">
-          <canvas id="chart" width="500" height="120"></canvas>
-        </div>
-        <div id="chartLegend"></div>
-        <div id="chartHint">Calculez un itinéraire pour afficher le profil.</div>
-      </div>
+      <!-- Elevation profile removed from sidebar, moved to bottom panel -->
 
       <!-- Summary -->
       <div id="summary" class="card">
@@ -125,9 +124,19 @@
 
     <!-- ── Map ── -->
     <div id="map"></div>
+
+    <!-- ── Bottom Panel (Elevation) ── -->
+    <div id="bottomPanel" class="hidden">
+      <div id="chartLegend"></div>
+      <div id="chartWrap">
+        <canvas id="chart" width="1200" height="150"></canvas>
+      </div>
+      <div id="chartHint">Survolez le profil pour voir l'altitude, la pente et la surface.</div>
+    </div>
   </div>
 
   <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
   <script type="module" src="app.js"></script>
 </body>
+
 </html>
