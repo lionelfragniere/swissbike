@@ -66,6 +66,7 @@ let end = null;
 let waypoints = [];
 let lastRoutePoints = null; // for GPX export
 let clickState = 0; // 0=need start, 1=need end, 2=computed
+let currentRawRoute = null; // Store for Step 2
 
 function updateBanner() {
   if (clickState === 0) {
@@ -91,6 +92,21 @@ const map = new maplibregl.Map({
   zoom: 8
 });
 map.addControl(new maplibregl.NavigationControl(), "top-right");
+
+// Request Geolocation
+if ("geolocation" in navigator) {
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      // Only set center if the map hasn't been interacted with and start is null
+      if (!start) {
+        map.setCenter([pos.coords.longitude, pos.coords.latitude]);
+        map.setZoom(12);
+      }
+    },
+    (err) => console.log("Geolocation error or denied:", err),
+    { enableHighAccuracy: false, timeout: 5000, maximumAge: 60000 }
+  );
+}
 
 let startMarker = new maplibregl.Marker({ color: "#4ade80", draggable: true });
 let endMarker = new maplibregl.Marker({ color: "#f87171", draggable: true });
@@ -140,9 +156,26 @@ map.on("load", () => {
     }
 
     const newWp = { lat: e.lngLat.lat, lon: e.lngLat.lng };
-    if (bestIdx > -1 && bestIdx > 0 && waypoints.length > 0) {
-      // Very naive insertion: just determine if it's closer to start or end of waypoints
-      waypoints.push(newWp); // Proper insertion requires full coordinate matching, just pushing for now as requested
+    if (bestIdx > -1 && waypoints.length > 0) {
+      // Find the best waypoint segment to insert into to minimize backtracking
+      const fullChain = [start, ...waypoints, end];
+      let bestInsertIdx = 0;
+      let minDeviation = Infinity;
+
+      for (let i = 0; i <= waypoints.length; i++) {
+        const ptA = fullChain[i];
+        const ptB = fullChain[i + 1];
+        const distDirect = haversineM(ptA.lat, ptA.lon, ptB.lat, ptB.lon);
+        const distViaNew = haversineM(ptA.lat, ptA.lon, newWp.lat, newWp.lon) +
+          haversineM(newWp.lat, newWp.lon, ptB.lat, ptB.lon);
+        const deviation = distViaNew - distDirect;
+
+        if (deviation < minDeviation) {
+          minDeviation = deviation;
+          bestInsertIdx = i;
+        }
+      }
+      waypoints.splice(bestInsertIdx, 0, newWp);
     } else {
       waypoints.push(newWp);
     }
@@ -193,9 +226,13 @@ map.on("click", (e) => {
   }
 });
 
-// Loop toggle
+// Options logic
 el("isLoop").addEventListener("change", () => {
   el("loopOptions").style.display = el("isLoop").checked ? "grid" : "none";
+});
+
+el("routeColor").addEventListener("change", () => {
+  if (currentRawRoute) drawRouteLine(currentRawRoute);
 });
 
 // Waypoints
@@ -464,7 +501,7 @@ async function fetchSurfacePoint(lat, lon, radiusM = 50) {
           method: "POST",
           headers: { "Content-Type": "application/x-www-form-urlencoded" },
           body: `data=${encodeURIComponent(query)}`,
-          signal: AbortSignal.timeout(3000 + attempt * 2000)
+          signal: AbortSignal.timeout(5000 + attempt * 2000)
         });
         if (!r.ok) continue;
         const data = await r.json();
@@ -545,7 +582,8 @@ async function buildProfile(latlons, maxSamples, onProgress) {
 // ─────────────────────────────────────────────
 // Map drawing
 // ─────────────────────────────────────────────
-function drawRouteLine(coords, color = "#4ade80") {
+function drawRouteLine(coords) {
+  const color = el("routeColor").value || "#dc2626";
   const src = map.getSource?.("route");
   if (!src) return;
   src.setData({
@@ -688,8 +726,6 @@ function renderSummary(dist_m, ascent_m, descent_m, slope_max, duration_s, break
 // ─────────────────────────────────────────────
 // Routing Logic (Step 1)
 // ─────────────────────────────────────────────
-let currentRawRoute = null; // Store for Step 2
-
 async function calcRoute() {
   if (!start) { setError("Veuillez d'abord définir un point de départ."); return; }
   if (!el("isLoop").checked && !end) { setError("Veuillez définir un point d'arrivée."); return; }
