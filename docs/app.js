@@ -9,7 +9,12 @@
 // ─────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────
-const VALHALLA_URL = "https://valhalla1.openstreetmap.de/route";
+// Multiple public Valhalla instances (try in order for CORS + availability)
+const VALHALLA_URLS = [
+  "https://valhalla1.openstreetmap.de/route",
+  "https://valhalla.openstreetmap.de/route",
+  "https://valhalla.mapzen.com/route"
+];
 // Swisstopo height REST API — explicit CORS support, browser-native, free.
 // Only covers Switzerland; returns null for points outside CH (we fall back to 0m).
 const ELEVATION_BASE = "https://api3.geo.admin.ch/rest/services/height";
@@ -340,7 +345,7 @@ function formatHrs(s) {
 }
 
 // ─────────────────────────────────────────────
-// API: Routing via Valhalla
+// API: Routing via Valhalla (multiple instances for CORS resilience)
 // ─────────────────────────────────────────────
 async function fetchRoute(startPt, endPt, viaPoints, options = {}) {
   const locations = [
@@ -369,13 +374,22 @@ async function fetchRoute(startPt, endPt, viaPoints, options = {}) {
     costing_options: costingOptions,
   };
 
-  const r = await fetch(VALHALLA_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  });
-  if (!r.ok) throw new Error(`Valhalla error ${r.status}: ${await r.text()}`);
-  return await r.json();
+  const body = JSON.stringify(payload);
+  const headers = { "Content-Type": "application/json" };
+
+  for (const url of VALHALLA_URLS) {
+    try {
+      const r = await fetch(url, { method: "POST", headers, body });
+      if (!r.ok) {
+        console.warn(`Valhalla ${url} returned ${r.status}`);
+        continue;
+      }
+      return await r.json();
+    } catch (err) {
+      console.warn(`Valhalla ${url} failed: ${err.message}. Trying next…`);
+    }
+  }
+  throw new Error("Tous les serveurs Valhalla sont inaccessibles (CORS ou réseau). Essayez sur HTTPS.");
 }
 
 // Loop: single waypoint offset from start
@@ -416,42 +430,59 @@ function wgs84ToLV95(lat, lon) {
 }
 
 function lv95ToWgs84(E, N) {
-  const y = (E - 2600000) / 1000000;
-  const x = (N - 1200000) / 1000000;
+  // Swisstopo official approximate conversion (MN95 -> WGS84)
+  // Source: https://www.swisstopo.admin.ch/content/swisstopo-internet/en/topics/survey/reference-systems/switzerland/_jcr_content/contentPar/tabs.tab.html/tabPar.0005.tab/tabPar.0005.par.html
+  const y = (E - 2600000) / 1000000; // auxiliary value for easting  (relates to longitude)
+  const x = (N - 1200000) / 1000000; // auxiliary value for northing (relates to latitude)
 
-  const lat = 16.9023892
+  // Latitude in [100'']
+  const lat_c = 16.9023892
     + 3.238272 * x
     - 0.270978 * y * y
     - 0.002528 * x * x
     - 0.0447 * y * y * x
     - 0.0140 * x * x * x;
 
-  const lon = 2.6779094
-    + 4.36 * y
-    - 0.850269 * y * x
-    + 0.026362 * y * x * x
-    - 0.005523 * y * y * y;
+  // Longitude in [100'']
+  const lon_c = 2.6779094
+    + 4.728982 * y
+    + 0.791484 * y * x
+    + 0.1306 * y * x * x
+    - 0.0436 * y * y * y;
 
-  return { lat: (lat * 100) / 36, lon: (lon * 100) / 36 };
+  // Convert [100''] back to decimal degrees
+  return {
+    lat: (lat_c * 100) / 36,
+    lon: (lon_c * 100) / 36
+  };
 }
 
 async function fetchElevations(latlons) {
-  // 1. Convert to LV95
-  const coords_2056 = [];
+  // 1. Convert to LV95, filtering out any points outside Switzerland
+  const allCoords = [];
   for (const p of latlons) {
     const lv95 = wgs84ToLV95(p.lat, p.lon);
-    if (lv95) coords_2056.push([lv95.E, lv95.N]);
+    if (lv95) allCoords.push([lv95.E, lv95.N]);
   }
-  if (coords_2056.length < 2) throw new Error("Trajet trop court ou hors Suisse.");
+  if (allCoords.length < 2) throw new Error("Trajet trop court ou hors Suisse.");
 
-  // 2. Build payload for bulk profile at 25m intervals
+  // 2. Thin to at most 2000 vertices to avoid HTTP 413 on large GPX files
+  //    We keep start + end + evenly-spaced intermediary points
+  const MAX_COORDS = 2000;
+  let coords_2056 = allCoords;
+  if (allCoords.length > MAX_COORDS) {
+    const step = (allCoords.length - 1) / (MAX_COORDS - 1);
+    coords_2056 = Array.from({ length: MAX_COORDS }, (_, i) => allCoords[Math.round(i * step)]);
+  }
+
+  // 3. Build payload for bulk profile at 25m intervals
   const payload = new URLSearchParams();
   payload.append('geom', JSON.stringify({ type: 'LineString', coordinates: coords_2056 }));
   payload.append('sr', '2056');
   payload.append('offset', '25'); // 25m sampling distance
   payload.append('distinct_points', 'True'); // Also keep original valhalla turning points
 
-  // 3. Request from Swisstopo profile.json
+  // 4. Request from Swisstopo profile.json
   const res = await fetch("https://api3.geo.admin.ch/rest/services/profile.json", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -460,7 +491,7 @@ async function fetchElevations(latlons) {
   if (!res.ok) throw new Error(`Swisstopo error ${res.status}`);
   const profileData = await res.json();
 
-  // 4. Map back to {lat, lon, ele_m, dist_m}
+  // 5. Map back to {lat, lon, ele_m, dist_m} using the corrected LV95 -> WGS84 conversion
   return profileData.map(p => {
     const wgs84 = lv95ToWgs84(p.easting, p.northing);
     return {
