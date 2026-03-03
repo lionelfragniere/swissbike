@@ -28,10 +28,20 @@ const SWISSTOPO_STYLE = {
       tiles: ["https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.pixelkarte-farbe/default/current/3857/{z}/{x}/{y}.jpeg"],
       tileSize: 256,
       attribution: "© swisstopo"
+    },
+    // ESRI World Imagery satellite tiles (free, no API key needed)
+    satellite: {
+      type: "raster",
+      tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],
+      tileSize: 256,
+      attribution: "© Esri, Maxar, Earthstar Geographics"
     }
   },
   layers: [{ id: "swisstopo", type: "raster", source: "swisstopo" }]
 };
+
+// Which base layer is currently active
+let currentBaseLayer = "map"; // "map" | "satellite"
 
 const SURF_COLORS = {
   "Asphalte": "#22d3ee",
@@ -123,6 +133,9 @@ hoverEl.className = "hover-pointer";
 let hoverMarker = new maplibregl.Marker({ element: hoverEl });
 
 map.on("load", () => {
+  // ── Satellite layer (hidden by default, toggled via layer switcher) ──
+  map.addLayer({ id: "satellite", type: "raster", source: "satellite", layout: { visibility: "none" } });
+
   map.addSource("route", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
   map.addLayer({
     id: "route-line",
@@ -147,6 +160,81 @@ map.on("load", () => {
       "line-color": ["get", "color"],
       "line-opacity": 0.9
     }
+  });
+
+  // ── Non-asphalted surface segments layer (clickable, with glow) ──
+  map.addSource("route-gravel", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+  // Wide translucent glow
+  map.addLayer({
+    id: "route-gravel-glow",
+    type: "line",
+    source: "route-gravel",
+    layout: { "line-join": "round", "line-cap": "round" },
+    paint: { "line-width": 14, "line-color": ["get", "color"], "line-opacity": 0.2 }
+  });
+  // Solid dashed foreground
+  map.addLayer({
+    id: "route-gravel-line",
+    type: "line",
+    source: "route-gravel",
+    layout: { "line-join": "round", "line-cap": "round" },
+    paint: { "line-width": 4, "line-color": ["get", "color"], "line-opacity": 0.92, "line-dasharray": [3, 2] }
+  });
+
+  // Hover cursor on gravel segments
+  map.on("mouseenter", "route-gravel-line", () => { map.getCanvas().style.cursor = "pointer"; });
+  map.on("mouseleave", "route-gravel-line", () => { map.getCanvas().style.cursor = ""; });
+
+  // Click on non-asphalted segment → open surface verification popup
+  map.on("click", "route-gravel-line", (e) => {
+    e.originalEvent.stopPropagation();
+    const props = e.features[0]?.properties || {};
+    const lat = e.lngLat.lat.toFixed(6);
+    const lon = e.lngLat.lng.toFixed(6);
+    const cat = props.surface_category || "Inconnu";
+    const conf = props.confidence != null ? (props.confidence * 100).toFixed(0) + "%" : "?";
+    const gmapsUrl = `https://www.google.com/maps/@${lat},${lon},18z/data=!3m1!1e3`;
+    const swisstopoUrl = `https://map.geo.admin.ch/?lang=fr&topic=ech&bgLayer=ch.swisstopo.swissimage&X=${lat}&Y=${lon}&zoom=9`;
+
+    const surfaceTagStyle = {
+      "Naturel": "background:#ef4444;color:#fff",
+      "Gravier": "background:#fb923c;color:#fff",
+      "Terre": "background:#a78bfa;color:#fff",
+      "Sentier": "background:#64748b;color:#fff",
+      "Inconnu": "background:#334155;color:#94a3b8",
+    };
+    const tagStyle = surfaceTagStyle[cat] || surfaceTagStyle["Inconnu"];
+
+    el("surfacePopupTitle").innerHTML =
+      `<span class="surf-tag" style="${tagStyle}">${cat}</span> Surface non-asphaltée`;
+    el("surfacePopupBody").innerHTML = `
+      <div style="margin-bottom:6px">📍 ${lat}, ${lon}</div>
+      <div style="margin-bottom:8px">🔎 Confiance données : <b>${conf}</b></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <a href="${gmapsUrl}" target="_blank" rel="noopener"
+           style="display:inline-flex;align-items:center;gap:5px;padding:5px 10px;
+                  background:#1e2130;border:1px solid #334155;border-radius:8px;
+                  color:#22d3ee;text-decoration:none;font-size:11px;font-weight:600">
+          🛰️ Google Maps Satellite
+        </a>
+        <a href="${swisstopoUrl}" target="_blank" rel="noopener"
+           style="display:inline-flex;align-items:center;gap:5px;padding:5px 10px;
+                  background:#1e2130;border:1px solid #334155;border-radius:8px;
+                  color:#4ade80;text-decoration:none;font-size:11px;font-weight:600">
+          🗺️ Swisstopo aerial
+        </a>
+      </div>
+    `;
+    el("surfacePopup").classList.remove("hidden");
+
+    // If already in satellite mode, zoom in for a better look
+    if (currentBaseLayer === "satellite") {
+      map.easeTo({ center: [e.lngLat.lng, e.lngLat.lat], zoom: Math.max(map.getZoom(), 16), duration: 600 });
+    }
+  });
+
+  el("surfacePopupClose").addEventListener("click", () => {
+    el("surfacePopup").classList.add("hidden");
   });
 
   // Make the route clickable to add waypoints
@@ -219,6 +307,23 @@ map.on("load", () => {
 
   refreshWpsUI();
 });
+
+// ─────────────────────────────────────────────
+// Layer toggle: Swisstopo map ↔ Satellite
+// ─────────────────────────────────────────────
+el("btnLayerMap").addEventListener("click", () => setBaseLayer("map"));
+el("btnLayerSat").addEventListener("click", () => setBaseLayer("satellite"));
+
+function setBaseLayer(mode) {
+  currentBaseLayer = mode;
+  const isSat = mode === "satellite";
+  if (map.getLayer("swisstopo")) map.setLayoutProperty("swisstopo", "visibility", isSat ? "none" : "visible");
+  if (map.getLayer("satellite")) map.setLayoutProperty("satellite", "visibility", isSat ? "visible" : "none");
+  el("btnLayerMap").classList.toggle("active", !isSat);
+  el("btnLayerSat").classList.toggle("active", isSat);
+  document.getElementById("map").classList.toggle("satellite-mode", isSat);
+}
+
 
 map.on("click", (e) => {
   if (clickState === 0) {
@@ -744,12 +849,59 @@ function drawSlopeLayer(profilePoints) {
   if (legend) legend.style.display = "block";
 }
 
+/**
+ * Highlights non-asphalted route segments in the 'route-gravel' layer.
+ * Each segment carries surface_category + confidence as properties
+ * so the click popup can display them.
+ */
+function drawGravelLayer(profilePoints) {
+  const src = map.getSource?.("route-gravel");
+  if (!src) return;
+  if (!profilePoints?.length) {
+    src.setData({ type: "FeatureCollection", features: [] });
+    return;
+  }
+
+  const NON_ASPHALT_COLORS = {
+    "Naturel": "#ef4444",  // red
+    "Gravier": "#fb923c",  // orange
+    "Terre": "#a78bfa",  // lavender
+    "Sentier": "#64748b",  // slate
+    "Inconnu": "#475569",  // dark slate
+  };
+
+  const features = [];
+  for (let i = 0; i < profilePoints.length - 1; i++) {
+    const p = profilePoints[i];
+    const cat = p.surface_category || "Inconnu";
+    if (cat === "Asphalte" || cat === "Pavés" || cat === "Compact") continue; // skip paved
+
+    const color = NON_ASPHALT_COLORS[cat] || NON_ASPHALT_COLORS["Inconnu"];
+    features.push({
+      type: "Feature",
+      properties: {
+        color,
+        surface_category: cat,
+        confidence: p.surface_confidence ?? 0,
+        dist_km: ((p.dist_m || 0) / 1000).toFixed(2)
+      },
+      geometry: {
+        type: "LineString",
+        coordinates: [[p.lon, p.lat], [profilePoints[i + 1].lon, profilePoints[i + 1].lat]]
+      }
+    });
+  }
+
+  src.setData({ type: "FeatureCollection", features });
+}
+
 function drawRouteLine(coords) {
   const color = el("routeColor").value || "#dc2626";
   const src = map.getSource?.("route");
   if (!src) return;
-  // Clear old slope overlay when a new route is drawn
+  // Clear old slope & gravel overlays when a new route is drawn
   drawSlopeLayer(null);
+  drawGravelLayer(null);
   src.setData({
     type: "FeatureCollection",
     features: [{ type: "Feature", properties: { color }, geometry: { type: "LineString", coordinates: coords } }]
@@ -762,6 +914,7 @@ function drawRouteLine(coords) {
     map.fitBounds([[b.minX, b.minY], [b.maxX, b.maxY]], { padding: 50, duration: 600 });
   }
 }
+
 
 // ─────────────────────────────────────────────
 // Elevation profile chart
@@ -1020,7 +1173,8 @@ btnAnalyze.addEventListener("click", async () => {
     renderSummary(r0dist, slopes.ascent_m, slopes.descent_m, slopes.slope_max_pct, null, breakdown);
     drawProfile(prof);
     drawSlopeLayer(prof);
-    setStatus("Analyse terminée ✓");
+    drawGravelLayer(prof);
+    setStatus("Analyse terminée ✓ · Cliquez sur les segments en pointillés pour vérifier via satellite.");
   } catch (e) {
     console.error(e);
     setError(String(e?.message || e));
@@ -1100,8 +1254,10 @@ btnGPXProfile.addEventListener("click", async () => {
     renderSummary(total_m, slopes.ascent_m, slopes.descent_m, slopes.slope_max_pct, null, breakdown);
     drawProfile(prof);
     drawSlopeLayer(prof);
+    drawGravelLayer(prof);
     btnGPX.disabled = false;
-    setStatus("GPX analysé ✓");
+    setStatus("GPX analysé ✓ · Cliquez sur les segments en pointillés pour vérifier via satellite.");
+
   } catch (e) {
     console.error(e);
     setError(String(e?.message || e));

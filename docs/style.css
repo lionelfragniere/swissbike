@@ -489,3 +489,119 @@ button:disabled {
   border-radius: 50%;
   flex-shrink: 0;
 }
+
+/* ── Layer Toggle (Carte / Satellite) ── */
+#layerToggle {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 1000;
+  display: flex;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  border: 1px solid #1e2130;
+}
+
+.layer-btn {
+  background: rgba(15, 17, 23, 0.88);
+  color: #64748b;
+  border: none;
+  border-radius: 0;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  padding: 7px 12px;
+  cursor: pointer;
+  width: auto;
+  transition: all 0.18s;
+  backdrop-filter: blur(8px);
+}
+
+.layer-btn:hover {
+  background: #1e2130;
+  color: #e2e8f0;
+}
+
+.layer-btn.active {
+  background: linear-gradient(135deg, #4ade80, #22d3ee);
+  color: #0f1117;
+}
+
+/* ── Surface Verification Popup ── */
+.surface-popup {
+  position: absolute;
+  bottom: 240px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(15, 17, 23, 0.95);
+  border: 1px solid #334155;
+  border-radius: 14px;
+  padding: 14px 16px;
+  z-index: 1100;
+  min-width: 280px;
+  max-width: 380px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(10px);
+  transition: opacity 0.22s ease, transform 0.22s ease;
+}
+
+.surface-popup.hidden {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-50%) translateY(12px);
+}
+
+.surface-popup-close {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  font-size: 13px;
+  color: #475569;
+  cursor: pointer;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: color 0.15s;
+}
+
+.surface-popup-close:hover {
+  color: #e2e8f0;
+}
+
+.surface-popup-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #e2e8f0;
+  margin-bottom: 8px;
+  padding-right: 20px;
+}
+
+.surface-popup-body {
+  font-size: 12px;
+  color: #94a3b8;
+  line-height: 1.6;
+  margin-bottom: 8px;
+}
+
+.surface-popup-body .surf-tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  margin-right: 4px;
+}
+
+.surface-popup-hint {
+  font-size: 11px;
+  color: #475569;
+  border-top: 1px solid #1e2130;
+  padding-top: 8px;
+  margin-top: 4px;
+}
+
+/* Satellite mode – dim map controls for readability */
+.satellite-mode .maplibregl-ctrl-group {
+  background: rgba(10, 10, 15, 0.75) !important;
+}

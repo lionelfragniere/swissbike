@@ -161,6 +161,20 @@
         <div class="slope-legend-row"><span class="slope-dot" style="background:#ef4444"></span>Naturel/Gravier</div>
         <div class="slope-legend-row"><span class="slope-dot" style="background:#334155"></span>Inconnu</div>
       </div>
+
+      <!-- Layer toggle button -->
+      <div id="layerToggle" title="Basculer carte / satellite">
+        <button id="btnLayerMap" class="layer-btn active" type="button">🗺️ Carte</button>
+        <button id="btnLayerSat" class="layer-btn" type="button">🛰️ Satellite</button>
+      </div>
+
+      <!-- Surface verification popup -->
+      <div id="surfacePopup" class="surface-popup hidden">
+        <div id="surfacePopupClose" class="surface-popup-close" title="Fermer">✕</div>
+        <div id="surfacePopupTitle" class="surface-popup-title"></div>
+        <div id="surfacePopupBody" class="surface-popup-body"></div>
+        <div class="surface-popup-hint">💡 Activez le mode satellite pour vérifier visuellement.</div>
+      </div>
     </div>
 
     <!-- ── Bottom Panel (Elevation) ── -->
