@@ -704,8 +704,8 @@ async function buildProfile(latlons, maxSamples, onProgress) {
  *   > 18%    → Mur         #0f172a black
  */
 const SLOPE_COLORS = [
-  { maxAbs: 1, color: "#4ade80", label: "Plat (0–1%)" },
-  { maxAbs: 6, color: "#facc15", label: "Cat. 1 (1–6%)" },
+  { maxAbs: 3, color: "#4ade80", label: "Plat (0–3%)" },
+  { maxAbs: 6, color: "#facc15", label: "Cat. 1 (3–6%)" },
   { maxAbs: 10, color: "#f97316", label: "Cat. 2 (6–10%)" },
   { maxAbs: 14, color: "#ef4444", label: "Cat. 3 (10–14%)" },
   { maxAbs: 18, color: "#7c3aed", label: "Extrême (14–18%)" },
@@ -773,8 +773,10 @@ function drawProfile(profilePoints) {
   ctx.clearRect(0, 0, W, H);
   if (!profilePoints?.length) return;
 
-  const padL = 48, padR = 10, padT = 10, padB = 22;
+  const SURF_H = 8;   // height of the surface color strip at the very bottom
+  const padL = 48, padR = 10, padT = 10, padB = 22 + SURF_H;
   const x0 = padL, y0 = padT, x1 = W - padR, y1 = H - padB;
+  const surfY = y1 + 4; // top of surface strip
 
   const dist = profilePoints.map(p => p.dist_m || 0);
   const ele = profilePoints.map(p => p.ele_m || 0);
@@ -785,20 +787,36 @@ function drawProfile(profilePoints) {
   const xp = d => x0 + (d / dMax) * (x1 - x0);
   const yp = e => y1 - ((e - eMin) / eRange) * (y1 - y0);
 
-  // Slope background bands (replace the old surface bands)
+  // ── Slope background bands ──
+  // Merge consecutive points with the same slope category into one wide rect
+  // to avoid the "striped spaghetti" look.
+  let runStart = 0;
+  let runColor = slopeColor(profilePoints[0].slope_pct);
+  const flushBand = (endIdx) => {
+    ctx.fillStyle = runColor + "30";
+    ctx.fillRect(
+      xp(dist[runStart]), y0,
+      Math.max(1, xp(dist[endIdx]) - xp(dist[runStart])),
+      y1 - y0
+    );
+  };
   for (let i = 1; i < profilePoints.length; i++) {
-    const col = slopeColor(profilePoints[i - 1].slope_pct);
-    ctx.fillStyle = col + "30"; // semi-transparent
-    ctx.fillRect(xp(dist[i - 1]), y0, Math.max(1, xp(dist[i]) - xp(dist[i - 1])), y1 - y0);
+    const col = slopeColor(profilePoints[i].slope_pct);
+    if (col !== runColor) {
+      flushBand(i);
+      runStart = i;
+      runColor = col;
+    }
   }
+  flushBand(profilePoints.length - 1);
 
-  // Axes
+  // ── Axes ──
   ctx.strokeStyle = "#1e2130"; ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(x0, y0); ctx.lineTo(x0, y1); ctx.lineTo(x1, y1);
   ctx.stroke();
 
-  // Elevation fill
+  // ── Elevation fill ──
   ctx.beginPath();
   ctx.moveTo(xp(dist[0]), yp(ele[0]));
   for (let i = 1; i < ele.length; i++) ctx.lineTo(xp(dist[i]), yp(ele[i]));
@@ -811,12 +829,38 @@ function drawProfile(profilePoints) {
   ctx.fillStyle = grad;
   ctx.fill();
 
-  // Elevation line
+  // ── Elevation line ──
   ctx.strokeStyle = "#4ade80"; ctx.lineWidth = 2;
   ctx.beginPath();
   ctx.moveTo(xp(dist[0]), yp(ele[0]));
   for (let i = 1; i < ele.length; i++) ctx.lineTo(xp(dist[i]), yp(ele[i]));
   ctx.stroke();
+
+  // ── Surface strip (green = asphalt, red = non-asphalt, gray = unknown) ──
+  // Merge runs of same surface into solid colour strips
+  const surfColor = (cat) =>
+    cat === "Asphalte" ? "#4ade80" :
+      cat === "Naturel" ? "#ef4444" :
+        "#334155";
+  let sRunStart = 0;
+  let sRunColor = surfColor(profilePoints[0].surface_category);
+  const flushSurf = (endIdx) => {
+    ctx.fillStyle = sRunColor;
+    ctx.fillRect(
+      xp(dist[sRunStart]), surfY,
+      Math.max(1, xp(dist[endIdx]) - xp(dist[sRunStart])),
+      SURF_H
+    );
+  };
+  for (let i = 1; i < profilePoints.length; i++) {
+    const col = surfColor(profilePoints[i].surface_category);
+    if (col !== sRunColor) {
+      flushSurf(i);
+      sRunStart = i;
+      sRunColor = col;
+    }
+  }
+  flushSurf(profilePoints.length - 1);
 
   // Labels
   ctx.fillStyle = "#64748b"; ctx.font = "11px Inter, system-ui";
