@@ -415,31 +415,61 @@ function wgs84ToLV95(lat, lon) {
   return { E: Math.round(E), N: Math.round(N) };
 }
 
-async function fetchOneElevation(lat, lon) {
-  const lv95 = wgs84ToLV95(lat, lon);
-  if (!lv95) return 0; // outside Switzerland – no data
-  try {
-    const url = `${ELEVATION_BASE}?easting=${lv95.E}&northing=${lv95.N}`;
-    const r = await fetch(url);
-    if (!r.ok) return 0;
-    const d = await r.json();
-    return parseFloat(d.height) || 0;
-  } catch { return 0; }
+function lv95ToWgs84(E, N) {
+  const y = (E - 2600000) / 1000000;
+  const x = (N - 1200000) / 1000000;
+
+  const lat = 16.9023892
+    + 3.238272 * x
+    - 0.270978 * y * y
+    - 0.002528 * x * x
+    - 0.0447 * y * y * x
+    - 0.0140 * x * x * x;
+
+  const lon = 2.6779094
+    + 4.36 * y
+    - 0.850269 * y * x
+    + 0.026362 * y * x * x
+    - 0.005523 * y * y * y;
+
+  return { lat: (lat * 100) / 36, lon: (lon * 100) / 36 };
 }
 
-async function fetchElevations(points) {
-  const CONCURRENCY = 8;
-  const results = new Array(points.length).fill(0);
-  for (let i = 0; i < points.length; i += CONCURRENCY) {
-    const batch = points.slice(i, i + CONCURRENCY);
-    const settled = await Promise.allSettled(
-      batch.map((p, bi) => fetchOneElevation(p.lat, p.lon).then(h => ({ idx: i + bi, h })))
-    );
-    for (const s of settled) {
-      if (s.status === "fulfilled") results[s.value.idx] = s.value.h;
-    }
+async function fetchElevations(latlons) {
+  // 1. Convert to LV95
+  const coords_2056 = [];
+  for (const p of latlons) {
+    const lv95 = wgs84ToLV95(p.lat, p.lon);
+    if (lv95) coords_2056.push([lv95.E, lv95.N]);
   }
-  return results;
+  if (coords_2056.length < 2) throw new Error("Trajet trop court ou hors Suisse.");
+
+  // 2. Build payload for bulk profile at 25m intervals
+  const payload = new URLSearchParams();
+  payload.append('geom', JSON.stringify({ type: 'LineString', coordinates: coords_2056 }));
+  payload.append('sr', '2056');
+  payload.append('offset', '25'); // 25m sampling distance
+  payload.append('distinct_points', 'True'); // Also keep original valhalla turning points
+
+  // 3. Request from Swisstopo profile.json
+  const res = await fetch("https://api3.geo.admin.ch/rest/services/profile.json", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: payload.toString()
+  });
+  if (!res.ok) throw new Error(`Swisstopo error ${res.status}`);
+  const profileData = await res.json();
+
+  // 4. Map back to {lat, lon, ele_m, dist_m}
+  return profileData.map(p => {
+    const wgs84 = lv95ToWgs84(p.easting, p.northing);
+    return {
+      lat: wgs84.lat,
+      lon: wgs84.lon,
+      ele_m: p.alts?.DTM2 || p.alts?.COMB || 0,
+      dist_m: p.dist || 0
+    };
+  });
 }
 
 // ─────────────────────────────────────────────
@@ -481,6 +511,7 @@ function surfaceCategory(tags) {
 // API: Surface via Overpass
 // ─────────────────────────────────────────────
 const _surfCache = new Map();
+let overpassBlocked = false; // Global killswitch for rate-limits
 const OVERPASS_URLS = [
   "https://overpass-api.de/api/interpreter",
   "https://z.overpass-api.de/api/interpreter",
@@ -488,6 +519,8 @@ const OVERPASS_URLS = [
 ];
 
 async function fetchSurfacePoint(lat, lon, radiusM = 50) {
+  if (overpassBlocked) return { category: "Inconnu", confidence: 0, tags: {} };
+
   const key = `${lat.toFixed(4)}|${lon.toFixed(4)}|${radiusM}`;
   if (_surfCache.has(key)) return _surfCache.get(key);
 
@@ -496,6 +529,7 @@ async function fetchSurfacePoint(lat, lon, radiusM = 50) {
 
   for (let attempt = 0; attempt < 2; attempt++) {
     for (const url of OVERPASS_URLS) {
+      if (overpassBlocked) break;
       try {
         const r = await fetch(url, {
           method: "POST",
@@ -503,6 +537,11 @@ async function fetchSurfacePoint(lat, lon, radiusM = 50) {
           body: `data=${encodeURIComponent(query)}`,
           signal: AbortSignal.timeout(5000 + attempt * 2000)
         });
+        if (r.status === 429) {
+          console.warn("Overpass 429 Too Many Requests. Blocking further calls.");
+          overpassBlocked = true;
+          break;
+        }
         if (!r.ok) continue;
         const data = await r.json();
         const elements = data.elements || [];
@@ -539,8 +578,19 @@ async function fetchSurfacePoint(lat, lon, radiusM = 50) {
 
 async function fetchSurfaces(points, sampleEvery = 5, radiusM = 50) {
   const results = new Array(points.length).fill(null);
+  let consecutiveFailures = 0;
+
   for (let i = 0; i < points.length; i += sampleEvery) {
+    if (overpassBlocked || consecutiveFailures >= 3) {
+      if (!overpassBlocked) console.warn("Overpass API has failed 3 times consecutively. Aborting surface fetch for the rest of the route.");
+      overpassBlocked = true;
+      break;
+    }
+
     const res = await fetchSurfacePoint(points[i].lat, points[i].lon, radiusM);
+    if (res.category === "Inconnu") consecutiveFailures++;
+    else consecutiveFailures = 0;
+
     for (let j = i; j < Math.min(points.length, i + sampleEvery); j++) {
       results[j] = res;
     }
@@ -554,29 +604,30 @@ async function fetchSurfaces(points, sampleEvery = 5, radiusM = 50) {
 // Build full profile from [lat,lon] array
 // ─────────────────────────────────────────────
 async function buildProfile(latlons, maxSamples, onProgress) {
-  const sampled = resamplePoints(latlons, maxSamples).map(([lon, lat]) => ({ lat, lon }));
+  // Convert lat/lon pairs to objects for easier parsing
+  const latlonObjs = latlons.map(p => (Array.isArray(p) ? { lon: p[0], lat: p[1] } : { lon: p.lon, lat: p.lat }));
 
   onProgress?.("Altitude en cours…");
-  const elevations = await fetchElevations(sampled);
-  sampled.forEach((p, i) => { p.ele_m = elevations[i] || 0; });
+  // Get heavily sampled profile from Swisstopo (25m interval)
+  const profile = await fetchElevations(latlonObjs);
 
+  if (!profile.length) throw new Error("Swisstopo Profile API n'a renvoyé aucune donnée.");
+
+  // To prevent Overpass API blocks, sparsely request surface data on `profile` based on maxSamples.
+  // We determine the stride so that we make AT MOST `maxSamples` queries over the track length.
   onProgress?.("Surface en cours…");
-  const surfaces = await fetchSurfaces(sampled, 5, 50);
-  sampled.forEach((p, i) => {
+  const sampleEvery = Math.max(1, Math.ceil(profile.length / maxSamples));
+  const surfaces = await fetchSurfaces(profile, sampleEvery, 50);
+
+  profile.forEach((p, i) => {
     p.surface_category = surfaces[i].category;
     p.surface_confidence = surfaces[i].confidence;
   });
 
-  const slopes = computeSlopes(sampled);
-  const breakdown = breakdownSurface(sampled);
+  const slopes = computeSlopes(profile);
+  const breakdown = breakdownSurface(profile);
 
-  let distM = 0;
-  const profile = sampled.map((p, i) => {
-    if (i > 0) distM += haversineM(sampled[i - 1].lat, sampled[i - 1].lon, p.lat, p.lon);
-    return { ...p, dist_m: distM };
-  });
-
-  return { profile, slopes, breakdown, total_m: distM };
+  return { profile, slopes, breakdown, total_m: profile[profile.length - 1].dist_m };
 }
 
 // ─────────────────────────────────────────────
