@@ -135,6 +135,20 @@ map.on("load", () => {
     }
   });
 
+  // Slope heatmap layer (drawn after analysis, on top of the base route)
+  map.addSource("route-slope", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+  map.addLayer({
+    id: "route-slope-line",
+    type: "line",
+    source: "route-slope",
+    layout: { "line-join": "round", "line-cap": "round" },
+    paint: {
+      "line-width": 5,
+      "line-color": ["get", "color"],
+      "line-opacity": 0.9
+    }
+  });
+
   // Make the route clickable to add waypoints
   map.on("mouseenter", "route-line", () => {
     if (clickState === 2) map.getCanvasContainer().classList.add("route-clickable");
@@ -635,6 +649,9 @@ async function fetchSurfaces(points, sampleEvery = 5, radiusM = 50) {
 // Build full profile from [lat,lon] array
 // ─────────────────────────────────────────────
 async function buildProfile(latlons, maxSamples, onProgress) {
+  // Reset Overpass block at the start of each new analysis session
+  overpassBlocked = false;
+
   // Convert lat/lon pairs to objects for easier parsing
   const latlonObjs = latlons.map(p => (Array.isArray(p) ? { lon: p[0], lat: p[1] } : { lon: p.lon, lat: p.lat }));
 
@@ -664,10 +681,61 @@ async function buildProfile(latlons, maxSamples, onProgress) {
 // ─────────────────────────────────────────────
 // Map drawing
 // ─────────────────────────────────────────────
+
+/**
+ * Slope categories for road cyclists (positive = up, negative = down, same colors):
+ *   0 – 1%   → Plat         #4ade80 green
+ *   1.1 – 3%  → Catégorie 1  #facc15 yellow
+ *   3.1 – 6%  → Catégorie 2  #f97316 orange
+ *   6.1 – 10% → Catégorie 3  #ef4444 red
+ *   > 10%     → Extrême     #7c3aed purple
+ */
+const SLOPE_COLORS = [
+  { maxAbs: 1, color: "#4ade80", label: "Plat (0–1%)" },
+  { maxAbs: 3, color: "#facc15", label: "Cat. 1 (1–3%)" },
+  { maxAbs: 6, color: "#f97316", label: "Cat. 2 (3–6%)" },
+  { maxAbs: 10, color: "#ef4444", label: "Cat. 3 (6–10%)" },
+  { maxAbs: Infinity, color: "#7c3aed", label: "Extrême (>10%)" }
+];
+
+function slopeColor(slopePct) {
+  const abs = Math.abs(slopePct || 0);
+  return (SLOPE_COLORS.find(s => abs <= s.maxAbs) || SLOPE_COLORS.at(-1)).color;
+}
+
+function drawSlopeLayer(profilePoints) {
+  const src = map.getSource?.("route-slope");
+  const legend = document.getElementById("slopeLegend");
+  if (!src) return;
+  if (!profilePoints?.length) {
+    src.setData({ type: "FeatureCollection", features: [] });
+    if (legend) legend.style.display = "none";
+    return;
+  }
+
+  // Build one LineString feature per segment, coloured by slope.
+  const features = [];
+  for (let i = 0; i < profilePoints.length - 1; i++) {
+    const p = profilePoints[i];
+    const q = profilePoints[i + 1];
+    const slope = p.slope_pct || 0;
+    features.push({
+      type: "Feature",
+      properties: { color: slopeColor(slope), slope },
+      geometry: { type: "LineString", coordinates: [[p.lon, p.lat], [q.lon, q.lat]] }
+    });
+  }
+
+  src.setData({ type: "FeatureCollection", features });
+  if (legend) legend.style.display = "block";
+}
+
 function drawRouteLine(coords) {
   const color = el("routeColor").value || "#dc2626";
   const src = map.getSource?.("route");
   if (!src) return;
+  // Clear old slope overlay when a new route is drawn
+  drawSlopeLayer(null);
   src.setData({
     type: "FeatureCollection",
     features: [{ type: "Feature", properties: { color }, geometry: { type: "LineString", coordinates: coords } }]
@@ -889,6 +957,7 @@ btnAnalyze.addEventListener("click", async () => {
 
     renderSummary(r0dist, slopes.ascent_m, slopes.descent_m, slopes.slope_max_pct, null, breakdown);
     drawProfile(prof);
+    drawSlopeLayer(prof);
     setStatus("Analyse terminée ✓");
   } catch (e) {
     console.error(e);
@@ -968,6 +1037,7 @@ btnGPXProfile.addEventListener("click", async () => {
 
     renderSummary(total_m, slopes.ascent_m, slopes.descent_m, slopes.slope_max_pct, null, breakdown);
     drawProfile(prof);
+    drawSlopeLayer(prof);
     btnGPX.disabled = false;
     setStatus("GPX analysé ✓");
   } catch (e) {
