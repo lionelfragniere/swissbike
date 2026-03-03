@@ -493,7 +493,7 @@ async function fetchElevations(latlons) {
   const payload = new URLSearchParams();
   payload.append('geom', JSON.stringify({ type: 'LineString', coordinates: coords_2056 }));
   payload.append('sr', '2056');
-  payload.append('offset', '25'); // 25m sampling distance
+  payload.append('offset', '50'); // 50m sampling distance
   payload.append('distinct_points', 'True'); // Also keep original valhalla turning points
 
   // 4. Request from Swisstopo profile.json
@@ -649,8 +649,8 @@ async function fetchSurfaces(points, sampleEvery = 5, radiusM = 50) {
 // Build full profile from [lat,lon] array
 // ─────────────────────────────────────────────
 async function buildProfile(latlons, maxSamples, onProgress) {
-  // Reset Overpass block at the start of each new analysis session
-  overpassBlocked = false;
+  // Note: overpassBlocked is NOT reset here – it persists for the session
+  // to avoid hammering a rate-limited Overpass server on every analysis.
 
   // Convert lat/lon pairs to objects for easier parsing
   const latlonObjs = latlons.map(p => (Array.isArray(p) ? { lon: p[0], lat: p[1] } : { lon: p.lon, lat: p.lat }));
@@ -683,19 +683,21 @@ async function buildProfile(latlons, maxSamples, onProgress) {
 // ─────────────────────────────────────────────
 
 /**
- * Slope categories for road cyclists (positive = up, negative = down, same colors):
+ * Slope categories for road cyclists:
  *   0 – 1%   → Plat         #4ade80 green
- *   1.1 – 3%  → Catégorie 1  #facc15 yellow
- *   3.1 – 6%  → Catégorie 2  #f97316 orange
- *   6.1 – 10% → Catégorie 3  #ef4444 red
- *   > 10%     → Extrême     #7c3aed purple
+ *   1 – 6%   → Catégorie 1  #facc15 yellow
+ *   6 – 10%  → Catégorie 2  #f97316 orange
+ *   10 – 14% → Catégorie 3  #ef4444 red
+ *   14 – 18% → Extrême     #7c3aed purple
+ *   > 18%    → Mur         #0f172a black
  */
 const SLOPE_COLORS = [
   { maxAbs: 1, color: "#4ade80", label: "Plat (0–1%)" },
-  { maxAbs: 3, color: "#facc15", label: "Cat. 1 (1–3%)" },
-  { maxAbs: 6, color: "#f97316", label: "Cat. 2 (3–6%)" },
-  { maxAbs: 10, color: "#ef4444", label: "Cat. 3 (6–10%)" },
-  { maxAbs: Infinity, color: "#7c3aed", label: "Extrême (>10%)" }
+  { maxAbs: 6, color: "#facc15", label: "Cat. 1 (1–6%)" },
+  { maxAbs: 10, color: "#f97316", label: "Cat. 2 (6–10%)" },
+  { maxAbs: 14, color: "#ef4444", label: "Cat. 3 (10–14%)" },
+  { maxAbs: 18, color: "#7c3aed", label: "Extrême (14–18%)" },
+  { maxAbs: Infinity, color: "#e2e8f0", label: "Mur (>18%)" }
 ];
 
 function slopeColor(slopePct) {
@@ -771,11 +773,10 @@ function drawProfile(profilePoints) {
   const xp = d => x0 + (d / dMax) * (x1 - x0);
   const yp = e => y1 - ((e - eMin) / eRange) * (y1 - y0);
 
-  // Surface background bands
+  // Slope background bands (replace the old surface bands)
   for (let i = 1; i < profilePoints.length; i++) {
-    const cat = profilePoints[i].surface_category || "Inconnu";
-    const col = SURF_COLORS[cat] || SURF_COLORS["Inconnu"];
-    ctx.fillStyle = col + "28";
+    const col = slopeColor(profilePoints[i - 1].slope_pct);
+    ctx.fillStyle = col + "30"; // semi-transparent
     ctx.fillRect(xp(dist[i - 1]), y0, Math.max(1, xp(dist[i]) - xp(dist[i - 1])), y1 - y0);
   }
 
@@ -812,12 +813,17 @@ function drawProfile(profilePoints) {
   ctx.fillText(`0`, x0, H - 6);
   ctx.fillText(`${(dMax / 1000).toFixed(1)} km`, x1 - 40, H - 6);
 
-  // Legend
-  const cats = [...new Set(profilePoints.map(p => p.surface_category || "Inconnu"))];
-  chartLegend.innerHTML = cats.map(k => {
-    const col = SURF_COLORS[k] || "#334155";
-    return `<span class="badge" style="color:${col};border-color:${col}30;background:${col}18">${k}</span>`;
-  }).join("");
+  // Legend — show slope categories present in profile
+  const slopeCatsPresent = new Set();
+  profilePoints.forEach(p => {
+    const abs = Math.abs(p.slope_pct || 0);
+    const sc = SLOPE_COLORS.find(s => abs <= s.maxAbs) || SLOPE_COLORS.at(-1);
+    slopeCatsPresent.add(sc.label + '|' + sc.color);
+  });
+  chartLegend.innerHTML = [...slopeCatsPresent].map(entry => {
+    const [label, col] = entry.split('|');
+    return `<span class="badge" style="color:${col};border-color:${col}40;background:${col}22">${label}</span>`;
+  }).join('');
   chartHint.textContent = "Survolez le graphique pour voir l'altitude, la pente et la surface.";
 
   // Save base graph image data
