@@ -1,12 +1,12 @@
 from __future__ import annotations
-from typing import List, Tuple, Dict, Any
+from typing import Any
 import httpx
 from cachetools import TTLCache
 from collections import Counter
 
 _cache = TTLCache(maxsize=4096, ttl=60 * 60)
 
-def _surface_category(tags: Dict[str, Any]):
+def _surface_category(tags: dict[str, Any]):
     surface = (tags.get("surface") or "").lower().strip()
     tracktype = (tags.get("tracktype") or "").lower().strip()
     smoothness = (tags.get("smoothness") or "").lower().strip()
@@ -36,10 +36,10 @@ def _surface_category(tags: Dict[str, Any]):
 
     return "Inconnu", 0.2
 
-def _key(lat: float, lon: float, radius_m: int) -> str:
-    return f"{round(lat,4)}|{round(lon,4)}|{radius_m}"
+def _key(lat: float, lon: float, radius_m: int) -> tuple[float, float, int]:
+    return (round(lat, 4), round(lon, 4), radius_m)
 
-async def _surface_single(client: httpx.AsyncClient, overpass_url: str, lat: float, lon: float, radius_m: int) -> Dict[str, Any]:
+async def _surface_single(client: httpx.AsyncClient, overpass_url: str, lat: float, lon: float, radius_m: int) -> dict[str, Any]:
     k=_key(lat,lon,radius_m)
     if k in _cache:
         return _cache[k]
@@ -85,7 +85,7 @@ async def _surface_single(client: httpx.AsyncClient, overpass_url: str, lat: flo
     _cache[k]=result
     return result
 
-async def surface_for_points(overpass_url: str, latlons: List[Tuple[float,float]], radius_m: int = 25, sample_every: int = 5) -> List[Dict[str, Any]]:
+async def surface_for_points(overpass_url: str, latlons: list[tuple[float, float]], radius_m: int = 25, sample_every: int = 5) -> list[dict[str, Any]]:
     """Surface estimation via Overpass.
 
     Overpass is the slowest & most fragile dependency. To avoid Cloud Run timeouts:
