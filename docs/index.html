@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SwissBike – Planification de sorties vélo</title>
+  <meta name="description" content="Planifiez vos sorties vélo de route en Suisse: profil altimétrique, type de surface (asphalte, gravier…), distances et dénivelé.">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+</head>
+<body>
+  <div id="app">
+    <!-- ── Sidebar ── -->
+    <div id="sidebar">
+
+      <div class="brand">
+        <h1>🚴 SwissBike</h1>
+        <span class="version">v4.0</span>
+      </div>
+
+      <div class="hint">
+        <kbd>Clic</kbd> = arrivée &nbsp;·&nbsp; <kbd>Shift+clic</kbd> = départ &nbsp;·&nbsp; <kbd>Ctrl+clic</kbd> = point de passage
+      </div>
+
+      <!-- Route options -->
+      <div class="card">
+        <div class="card-title">Itinéraire</div>
+
+        <div class="row">
+          <div class="field">
+            <label for="profile">Profil</label>
+            <select id="profile">
+              <option value="balanced">Équilibré</option>
+              <option value="road" selected>Route</option>
+              <option value="gravel">Gravel</option>
+              <option value="mtb">VTT</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="alternatives">Alternatives</label>
+            <select id="alternatives">
+              <option value="1" selected>1</option>
+              <option value="2">2</option>
+              <option value="3">3</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="field">
+            <label for="avoidGravel">Éviter gravier (0–1)</label>
+            <input id="avoidGravel" type="number" min="0" max="1" step="0.05" value="0.2">
+          </div>
+          <div class="field">
+            <label for="avoidSteep">Éviter pentes (0–1)</label>
+            <input id="avoidSteep" type="number" min="0" max="1" step="0.05" value="0.2">
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="maxSamples">Échantillons profil</label>
+          <input id="maxSamples" type="number" min="40" max="300" step="10" value="80">
+        </div>
+
+        <!-- Loop -->
+        <div class="field">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input id="isLoop" type="checkbox"> Boucle (départ = arrivée)
+          </label>
+        </div>
+        <div id="loopOptions" style="display:none" class="row">
+          <div class="field">
+            <label for="loopKm">Distance boucle (km)</label>
+            <input id="loopKm" type="number" min="1" max="300" step="1" value="30">
+          </div>
+          <div class="field">
+            <label for="loopBearing">Direction (°)</label>
+            <input id="loopBearing" type="number" min="0" max="359" step="5" value="45">
+          </div>
+        </div>
+
+        <!-- Waypoints -->
+        <div id="wps" class="small">Points de passage: aucun</div>
+        <button id="btnClearWps" class="btn-ghost" type="button" style="width:auto;font-size:11px;padding:4px 10px">
+          ✕ Effacer points de passage
+        </button>
+
+        <!-- Status -->
+        <div id="status"></div>
+        <div id="error"></div>
+
+        <!-- Action buttons -->
+        <div class="btn-row">
+          <button id="btnCompute" class="btn-primary" type="button">Calculer l'itinéraire</button>
+          <button id="btnGPX" class="btn-ghost" type="button" disabled title="Exporter GPX">GPX</button>
+        </div>
+      </div>
+
+      <!-- GPX import -->
+      <div class="card">
+        <div class="card-title">Importer GPX</div>
+        <div class="field">
+          <label for="gpxFile">Fichier .gpx</label>
+          <input id="gpxFile" type="file" accept=".gpx">
+        </div>
+        <button id="btnGPXProfile" class="btn-secondary" type="button">Analyser le profil GPX</button>
+      </div>
+
+      <!-- Elevation profile -->
+      <div class="card">
+        <div class="card-title">Profil altimétrique</div>
+        <div id="chartWrap">
+          <canvas id="chart" width="500" height="120"></canvas>
+        </div>
+        <div id="chartLegend"></div>
+        <div id="chartHint">Calculez un itinéraire pour afficher le profil.</div>
+      </div>
+
+      <!-- Summary -->
+      <div id="summary" class="card">
+        <div class="card-title">Résumé</div>
+      </div>
+
+    </div>
+
+    <!-- ── Map ── -->
+    <div id="map"></div>
+  </div>
+
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

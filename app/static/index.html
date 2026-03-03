@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SwissBike</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+  </head>
+  <body>
+    <div id="app">
+      <div id="sidebar">
+        <h1>SwissBike</h1>
+        <div class="small">Clic = arrivée, <b>Shift+clic</b> = départ. Déplace les marqueurs aussi.</div>
+
+        <div class="card">
+          <div class="row">
+            <div>
+              <label>Profil</label>
+              <select id="profile">
+                <option value="balanced">Équilibré</option>
+                <option value="road">Route</option>
+                <option value="gravel">Gravel</option>
+                <option value="mtb">VTT</option>
+              </select>
+            </div>
+            <div>
+              <label>Alternatives</label>
+              <select id="alternatives">
+                <option value="1">1</option>
+                <option value="1" selected>1</option>
+                <option value="2">2</option>
+                <option value="3">3</option>
+              </select>
+            </div>
+          </div>
+
+          <div style="margin-top:10px">
+            <label>Éviter gravier (0–1)</label>
+            <input id="avoidGravel" type="number" min="0" max="1" step="0.05" value="0.2">
+          </div>
+          <div style="margin-top:10px">
+            <label>Éviter fortes pentes (0–1)</label>
+            <input id="avoidSteep" type="number" min="0" max="1" step="0.05" value="0.2">
+          </div>
+          <div style="margin-top:10px">
+            <label>Échantillons</label>
+            <input id="maxSamples" type="number" min="60" max="400" step="10" value="100">
+          </div>
+
+
+          <div style="margin-top:10px">
+            <label><input id="isLoop" type="checkbox"> Boucle (départ = arrivée)</label>
+            <div class="row" style="margin-top:8px">
+              <div>
+                <label>Distance boucle (km)</label>
+                <input id="loopKm" type="number" min="1" max="300" step="1" value="30">
+              </div>
+              <div>
+                <label>Direction (°)</label>
+                <input id="loopBearing" type="number" min="0" max="359" step="5" value="45">
+              </div>
+            </div>
+          </div>
+
+          <div id="status" class="small" style="margin-top:10px;color:#444"></div>
+
+          <div style="margin-top:10px">
+            <label>Importer GPX</label>
+            <input id="gpxFile" type="file" accept=".gpx" />
+            <button id="btnGPXProfile" class="btn secondary" type="button">Analyser GPX</button>
+            <div class="small">Le profil sera calculé (altitude/pente/surface) en fonction de la distance.</div>
+          </div>
+
+          <div style="margin-top:10px" class="row">
+            <button id="btnCompute">Calculer</button>
+            <button id="btnGPX" disabled>GPX</button>
+          </div>
+
+          <div id="error" class="small" style="margin-top:10px;color:#b00020"></div>
+        </div>
+
+        <div id="summary" class="card" style="display:none"></div>
+      </div>
+      <div id="map"></div>
+    </div>
+
+    <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+    <script type="module" src="/static/app.js"></script>
+  </body>
+</html>
