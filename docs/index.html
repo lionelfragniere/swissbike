@@ -97,9 +97,20 @@
         <div id="error"></div>
 
         <!-- Action buttons -->
+        <div class="field">
+          <button id="btnCompute" class="btn-primary" type="button">Tracer la route</button>
+        </div>
+        <div class="field">
+          <button id="btnAnalyze" class="btn-secondary" type="button" style="display:none;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              style="width:16px;margin-right:8px;vertical-align:-3px">
+              <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7m4 0h6v6m-6-6 6 6" />
+            </svg>
+            Analyser surface & dénivelé
+          </button>
+        </div>
         <div class="btn-row">
-          <button id="btnCompute" class="btn-primary" type="button">Calculer l'itinéraire</button>
-          <button id="btnGPX" class="btn-ghost" type="button" disabled title="Exporter GPX">GPX</button>
+          <button id="btnGPX" class="btn-ghost" type="button" disabled title="Exporter GPX">Exporter GPX</button>
         </div>
       </div>
 

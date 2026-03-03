@@ -346,7 +346,7 @@ button:disabled {
 #bottomPanel {
   position: absolute;
   bottom: 0;
-  left: var(--sidebar-w);
+  left: 0;
   right: 0;
   height: 220px;
   background: var(--bg-card);
@@ -354,9 +354,10 @@ button:disabled {
   display: flex;
   flex-direction: column;
   padding: 16px 24px;
-  z-index: 500;
-  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.3);
-  transition: transform 0.3s ease;
+  z-index: 1001;
+  /* Above sidebar */
+  box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.5);
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 #bottomPanel.hidden {
@@ -390,6 +391,27 @@ button:disabled {
   font-size: 12px;
   color: var(--text-muted);
   text-align: right;
+}
+
+/* ── Interactive Map Elements ── */
+.hover-pointer {
+  width: 16px;
+  height: 16px;
+  background-color: #3b82f6;
+  /* Blue-500 */
+  border: 3px solid #ffffff;
+  border-radius: 50%;
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+  transition: transform 0.1s ease-out;
+}
+
+.maplibregl-canvas {
+  cursor: crosshair;
+}
+
+.route-clickable .maplibregl-canvas {
+  cursor: pointer !important;
 }
 
 /* ── Scrollbar ── */

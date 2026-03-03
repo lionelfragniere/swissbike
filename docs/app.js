@@ -54,6 +54,7 @@ const wpsBox = el("wps");
 const btnClearWps = el("btnClearWps");
 const gpxFile = el("gpxFile");
 const btnGPXProfile = el("btnGPXProfile");
+const btnAnalyze = el("btnAnalyze");
 const banner = el("instructionBanner");
 const bottomPanel = el("bottomPanel");
 
@@ -95,6 +96,11 @@ let startMarker = new maplibregl.Marker({ color: "#4ade80", draggable: true });
 let endMarker = new maplibregl.Marker({ color: "#f87171", draggable: true });
 let wpMarkers = [];
 
+// Element for the interactive blue cursor
+const hoverEl = document.createElement("div");
+hoverEl.className = "hover-pointer";
+let hoverMarker = new maplibregl.Marker({ element: hoverEl });
+
 map.on("load", () => {
   map.addSource("route", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
   map.addLayer({
@@ -108,15 +114,55 @@ map.on("load", () => {
     }
   });
 
+  // Make the route clickable to add waypoints
+  map.on("mouseenter", "route-line", () => {
+    if (clickState === 2) map.getCanvasContainer().classList.add("route-clickable");
+  });
+  map.on("mouseleave", "route-line", () => {
+    map.getCanvasContainer().classList.remove("route-clickable");
+  });
+  map.on("click", "route-line", (e) => {
+    if (clickState !== 2) return;
+    // Prevent the generic map click from firing and double-adding
+    e.originalEvent.stopPropagation();
+
+    // Find the closest point in the route to insert the waypoint
+    let bestIdx = -1;
+    let bestDist = Infinity;
+    if (currentRawRoute) {
+      for (let i = 0; i < currentRawRoute.length - 1; i++) {
+        const pCount = Math.floor(currentRawRoute.length / 20); // sample
+        if (i % (pCount > 0 ? pCount : 1) !== 0) continue; // too slow to check all 
+        // Just a rough estimation
+        const d = haversineM(e.lngLat.lat, e.lngLat.lng, currentRawRoute[i][1], currentRawRoute[i][0]);
+        if (d < bestDist) { bestDist = d; bestIdx = i; }
+      }
+    }
+
+    const newWp = { lat: e.lngLat.lat, lon: e.lngLat.lng };
+    if (bestIdx > -1 && bestIdx > 0 && waypoints.length > 0) {
+      // Very naive insertion: just determine if it's closer to start or end of waypoints
+      waypoints.push(newWp); // Proper insertion requires full coordinate matching, just pushing for now as requested
+    } else {
+      waypoints.push(newWp);
+    }
+
+    refreshWpMarkers();
+    refreshWpsUI();
+    banner.textContent = "⏱️ Recalcul de l'itinéraire...";
+    banner.classList.remove("hidden");
+    calcRoute();
+  });
+
   startMarker.on("dragend", () => {
     const ll = startMarker.getLngLat();
     start = { lat: ll.lat, lon: ll.lng };
-    setStatus("Départ déplacé.");
+    if (clickState === 2) calcRoute();
   });
   endMarker.on("dragend", () => {
     const ll = endMarker.getLngLat();
     end = { lat: ll.lat, lon: ll.lng };
-    setStatus("Arrivée déplacée.");
+    if (clickState === 2) calcRoute();
   });
 
   refreshWpsUI();
@@ -135,7 +181,7 @@ map.on("click", (e) => {
     clickState = 2;
     updateBanner();
     setStatus("Arrivée définie, calcul en cours...");
-    btnCompute.click(); // Auto-calculate
+    calcRoute(); // Auto-calculate
   } else {
     // State 2: already computed, add waypoint
     waypoints.push({ lat: e.lngLat.lat, lon: e.lngLat.lng });
@@ -143,8 +189,7 @@ map.on("click", (e) => {
     refreshWpsUI();
     banner.textContent = "⏱️ Recalcul de l'itinéraire...";
     banner.classList.remove("hidden");
-    setStatus("Point de passage ajouté, recalcul...");
-    btnCompute.click(); // Auto-recalculate
+    calcRoute(); // Auto-recalculate
   }
 });
 
@@ -159,7 +204,7 @@ btnClearWps.addEventListener("click", () => {
   refreshWpMarkers();
   refreshWpsUI();
   setStatus("Points de passage effacés.");
-  if (clickState === 2) btnCompute.click();
+  if (clickState === 2) calcRoute();
 });
 
 function refreshWpsUI() {
@@ -168,9 +213,16 @@ function refreshWpsUI() {
 }
 function refreshWpMarkers() {
   wpMarkers.forEach(m => { try { m.remove(); } catch { } });
-  wpMarkers = waypoints.map(p =>
-    new maplibregl.Marker({ color: "#fb923c" }).setLngLat([p.lon, p.lat]).addTo(map)
-  );
+  wpMarkers = waypoints.map((p, i) => {
+    const m = new maplibregl.Marker({ color: "#fb923c", draggable: true })
+      .setLngLat([p.lon, p.lat]).addTo(map);
+    m.on("dragend", () => {
+      const ll = m.getLngLat();
+      waypoints[i] = { lat: ll.lat, lon: ll.lng };
+      if (clickState === 2) calcRoute();
+    });
+    return m;
+  });
 }
 
 // ─────────────────────────────────────────────
@@ -603,10 +655,14 @@ function drawProfile(profilePoints) {
     ctx.strokeStyle = "#e2e8f0"; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
     ctx.beginPath(); ctx.moveTo(cx, y0); ctx.lineTo(cx, y1); ctx.stroke();
     ctx.setLineDash([]);
+
+    // Also move map marker
+    hoverMarker.setLngLat([p.lon, p.lat]).addTo(map);
   };
   chart.onmouseleave = () => {
     chartHint.textContent = "Survolez le graphique pour voir l'altitude, la pente et la surface.";
     ctx.putImageData(imageData, 0, 0); // Restore pristine graph
+    hoverMarker.remove();
   };
 }
 
@@ -630,18 +686,21 @@ function renderSummary(dist_m, ascent_m, descent_m, slope_max, duration_s, break
 }
 
 // ─────────────────────────────────────────────
-// Main "Calculer" button
+// Routing Logic (Step 1)
 // ─────────────────────────────────────────────
-btnCompute.addEventListener("click", async () => {
+let currentRawRoute = null; // Store for Step 2
+
+async function calcRoute() {
   if (!start) { setError("Veuillez d'abord définir un point de départ."); return; }
   if (!el("isLoop").checked && !end) { setError("Veuillez définir un point d'arrivée."); return; }
 
   setError(""); summary.style.display = "none";
+  bottomPanel.classList.add("hidden");
+  btnAnalyze.style.display = "none";
   setBusy(true);
 
   try {
     const isLoop = el("isLoop").checked;
-    const maxSamples = Number(el("maxSamples").value) || 80;
     const alternatives = Number(el("alternatives").value) || 1;
     const profile = el("profile").value;
 
@@ -663,15 +722,22 @@ btnCompute.addEventListener("click", async () => {
 
     const r0 = routes[0];
     const coords = decodePolyline(r0.geometry);
+    currentRawRoute = coords; // Save for analysis
+
+    // Create a mock profile with distancing only (for GPX/Fast display)
+    let distM = 0;
+    lastRoutePoints = coords.map((c, i) => {
+      const pt = { lon: c[0], lat: c[1] };
+      if (i > 0) distM += haversineM(coords[i - 1][1], coords[i - 1][0], c[1], c[0]);
+      pt.dist_m = distM;
+      return pt;
+    });
+
     drawRouteLine(coords);
+    renderSummary(r0.distance || distM, 0, 0, 0, r0.duration, null);
 
-    const { profile: prof, slopes, breakdown, total_m } = await buildProfile(coords, maxSamples, setStatus);
-    lastRoutePoints = prof;
-
-    bottomPanel.classList.remove("hidden");
-    renderSummary(r0.distance || total_m, slopes.ascent_m, slopes.descent_m, slopes.slope_max_pct, r0.duration, breakdown);
-    drawProfile(prof);
     btnGPX.disabled = false;
+    btnAnalyze.style.display = "inline-flex"; // Show step 2 button
     setStatus("Itinéraire calculé ✓");
     if (clickState === 2) updateBanner();
   } catch (e) {
@@ -680,6 +746,39 @@ btnCompute.addEventListener("click", async () => {
     setStatus("Erreur.");
   } finally {
     setBusy(false);
+  }
+}
+
+btnCompute.addEventListener("click", calcRoute);
+
+// ─────────────────────────────────────────────
+// Analysis Logic (Step 2)
+// ─────────────────────────────────────────────
+btnAnalyze.addEventListener("click", async () => {
+  if (!currentRawRoute) return;
+  setError("");
+  const btnOriginalText = btnAnalyze.innerHTML;
+  btnAnalyze.disabled = true;
+  btnAnalyze.innerHTML = `<span class="spinner"></span>Analyse en cours…`;
+
+  try {
+    const maxSamples = Number(el("maxSamples").value) || 80;
+    const { profile: prof, slopes, breakdown, total_m } = await buildProfile(currentRawRoute, maxSamples, setStatus);
+    lastRoutePoints = prof;
+
+    bottomPanel.classList.remove("hidden");
+    const r0dist = lastRoutePoints[lastRoutePoints.length - 1].dist_m;
+
+    renderSummary(r0dist, slopes.ascent_m, slopes.descent_m, slopes.slope_max_pct, null, breakdown);
+    drawProfile(prof);
+    setStatus("Analyse terminée ✓");
+  } catch (e) {
+    console.error(e);
+    setError(String(e?.message || e));
+    setStatus("Erreur pendant l'analyse.");
+  } finally {
+    btnAnalyze.disabled = false;
+    btnAnalyze.innerHTML = btnOriginalText;
   }
 });
 
